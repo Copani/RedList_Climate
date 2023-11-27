@@ -5,7 +5,7 @@
 #SBATCH --account=impactee
 #SBATCH --output=temp/temp-%j.out
 #SBATCH --error=temp/temp-%j.err
-#SBATCH --mail-user=maxkotz@pik-potsdam.de
+#SBATCH --mail-user=claussar@pik-potsdam.de
 #SBATCH --mail-type=fail
 #SBATCH --nodes=1
 #SBATCH --tasks-per-node=1
