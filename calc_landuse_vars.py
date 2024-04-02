@@ -18,9 +18,8 @@ from utilities_spacial_vars import prep_for_gridcalc
 # pop_pressure=3.333*np.log(pop_dens+1)
 # pop_pressure[pop_dens>1000]=10
 
-rows = 0 # of rows = 0, all rows are loaded
-year = 2021
-
+rows = 5 # of rows = 0, all rows are loaded
+year = 2022
 t1 = time()
 
 # Load and format landuse dataset
@@ -121,6 +120,6 @@ print('qantities for {} species calculated in {} s'.format(rows, t4-t3))
 
 # save new dataframe
 # species_data.to_csv('/home/claussar/IUCN_range_coords/IUCN_AMPHIBIA_coords.csv')
-species_data.to_csv('gaa2_lpa2021_lpa2004_lpa1980.csv')
+# species_data.to_csv('gaa2_lpa2021_lpa2004_lpa1980.csv')
 
 print('finished in {} s'.format(t4-t1))

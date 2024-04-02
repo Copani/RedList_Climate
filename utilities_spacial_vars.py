@@ -5,97 +5,216 @@ import xarray as xr
 import rioxarray as rxr
 from rasterio.features import rasterize
 
-def prep_for_gridcalc(dataarray, gdf_i, window_only=False, margin=1):
-  '''This function cuts the data down to a window of rangemap bounds and
-  rasterizes the range map to this window, it also gives cell coefficients important for
-  consistent size measutres (see [wiki](https://github.com/Copani/RedList_Climate/wiki))
+class GridCalc:
+  def __init__(self, dataarray, gdf_i, margin=1):
+    self.dataarray = dataarray
+    self.gdf_i = gdf_i
+    self.margin = margin
+    
+    # calc species range map bounds
+    self.xmin, self.ymin, self.xmax, self.ymax = self.gdf_i.bounds.values[0]
+    self.xmin -= self.margin
+    self.ymin -= self.margin
+    self.xmax += self.margin
+    self.ymax += self.margin
+    
+    # get lat lon expressions
+    if 'latitude' in self.dataarray.coords:
+      self.lat = 'latitude'
+    elif 'lat' in self.dataarray.coords:
+      self.lat = 'lat'
+    elif 'y' in self.dataarray.coords:
+      self.lat = 'y'
+    if 'longitude' in self.dataarray.coords:
+      self.lon = 'longitude'
+    elif 'lon' in self.dataarray.coords:
+      self.lon = 'lon'
+    elif 'x' in self.dataarray.coords:
+      self.lon = 'x'
+    
+      
+    # get window, mask and coefficients
+    self.data_window = self.get_window(self.dataarray)
+    self.mask = self.get_mask()
+    self.cell_coefs = self.get_coefs()
+    
+    
+    ### SOME UNIT TESTS ###
+    # Assert that gdf_i is a GeoDataFrame
+    assert isinstance(self.gdf_i, gpd.GeoDataFrame), "gdf_i is not a GeoDataFrame"
 
-  Parameters
-  ---
-  - dataarray: a rioxr georeferenced dataarray with a lon, lat grid
-  - gdf_i: a single line of a geodataframe with a geometry
-  - window_only (opt): bool, if True, only the data_window is calculated and gdf_i rasterization aswell as cell coefs are skipped. Only one output if activated. 
-  If you want to calculate several variables on the same grid, you may only want to do the most timeconsuming opertation in this function once.
-  - margin (opt): margin around gdf_i bounds of the raster window. Should be at least twice the gridsize to avoid errors!
+    # Assert that gdf_i has a length of 1
+    assert len(self.gdf_i) == 1, "gdf_i does not have a length of 1"
+
+    # Assert that gdf_i and the dataarray are in the same crs
+    assert self.dataarray.rio.crs == self.gdf_i.crs, "dataarray and gdf_i don't have the same crs" 
+
+    # Assert if lat lon expressions exist
+    assert (self.lat in self.dataarray.coords) & (self.lon in dataarray.coords), "there are no correct latitude/longitude coordinates in self.dataarray"
+
+    # Correct if latitude and longitude are in wrong order
+    if self.dataarray[self.lat].values[0] > self.dataarray[self.lat].values[-1]:
+      self.dataarray = self.dataarray.sortby(self.lat) 
+    if self.dataarray[self.lon].values[0] > self.dataarray[self.lon].values[-1]:
+      self.dataarray = self.dataarray.sortby(self.lon)
   
-  Returns
-  ---
-  - data_window: xr.dataarray of data in the window with same shape as geo_mask, nan replaced by 0 (for values, apply data_windows.values)
-  - geo_mask: 1,0 np.array of shape burned into the grid 
-  - cell_coefs: vector of cos(lat) coefficient for consistent area calculation
-  '''
-  if 'latitude' in dataarray.coords:
-    lat = 'latitude'
-  elif 'lat' in dataarray.coords:
-    lat = 'lat'
-  if 'longitude' in dataarray.coords:
-    lon = 'longitude'
-  elif 'lon' in dataarray.coords:
-    lon = 'lon' 
+     
 
-  ### SOME UNIT TESTS ###
-  # Assert that gdf_i is a GeoDataFrame
-  assert isinstance(gdf_i, gpd.GeoDataFrame), "gdf_i is not a GeoDataFrame"
+  def get_window(self, dataarray):
+    '''This function cuts the data down to a window of rangemap bounds. 
+    Note that any dataarray can be used as an input.
 
-  # Assert that gdf_i has a length of 1
-  assert len(gdf_i) == 1, "gdf_i does not have a length of 1"
+    Returns
+    - data_window: xr.dataarray of data, nan replaced by 0 (for values, apply data_windows.values)
+    '''
 
-  # Assert that gdf_i and the dataarray are in the same crs
-  assert dataarray.rio.crs == gdf_i.crs, "dataarray and gdf_i don't have the same crs" 
+    # pick a slice from the data within geometry bounds
+    coordinate_names = [('lon', 'lat'), ('longitude', 'latitude'), ('x', 'y')]
 
-  # Assert if lat lon expressions exist
-  assert (lat in dataarray.coords) & (lon in dataarray.coords), "there are no correct latitude/longitude coordinates in dataarray"
-
-  # Correct if latitude and longitude are in wrong order
-  if dataarray[lat].values[0] > dataarray[lat].values[-1]:
-    dataarray = dataarray.sortby(lat) 
-  if dataarray[lon].values[0] > dataarray[lon].values[-1]:
-    dataarray = dataarray.sortby(lon)
+    for coord in coordinate_names:
+      try:
+        data_window = dataarray.sel(**{coord[0]: slice(self.xmin, self.xmax), coord[1]: slice(self.ymin, self.ymax)})
+        break
+      except:
+        continue
+    # for calculations set nan to 0
+    data_window = data_window.fillna(0)
+    
+    return data_window
   
 
-  ### FUNCTION ###
-  # get radian grid resolution for later
-  latres = (dataarray[lat].values[1] - dataarray[lat].values[0]) / 360 * 2 * np.pi
-  lonres = (dataarray[lon].values[1] - dataarray[lon].values[0]) / 360 * 2 * np.pi
-  
-  # get data slices for poly window
-  xmin, ymin, xmax, ymax = gdf_i.bounds.values[0]
-  xmin -= margin
-  ymin -= margin
-  xmax += margin
-  ymax += margin
-
-  # pick a slice from the data within geometry bounds
-  try:
-    data_window = dataarray.sel(lon = slice(xmin, xmax), lat = slice(ymin, ymax))
-  except:
-    data_window = dataarray.sel(longitude = slice(xmin, xmax), latitude = slice(ymin, ymax))
-
-  
-  # for calculations set nan to 0
-  data_window0 = data_window.fillna(0)
-
-
-  if window_only: 
-    # skip other gridding of geometry and cell_coefs, only output data window
-    return data_window0
-  else:
+  def get_mask(self):
+    '''This function rasterizes the range map to the window by creating a 1,0 mask of the window shape.
+    Every cell that touches the geometry is set to 1.
+    
+    Returns
+    ---
+    geo_mask: 1,0 np.array of shape burned into the grid 
+    '''
     # rasterize the polygon according to window.
-    geo_mask = rasterize([(gdf_i['geometry'].iloc[0])],
-                      transform=data_window.rio.transform(),
-                      out_shape=(data_window[lat].shape[0], data_window[lon].shape[0]),  
+    if self.lon == 'x':
+      geo_mask = rasterize([(self.gdf_i['geometry'].iloc[0])],
+                      transform=self.data_window.rio.transform('xy'),
+                      out_shape=(self.data_window[self.lat].shape[0], self.data_window[self.lon].shape[0]),  
                       all_touched=True)
+      return geo_mask
+      
+    else:
+      geo_mask = rasterize([(self.gdf_i['geometry'].iloc[0])],
+                        transform=self.data_window.rio.transform(),
+                        out_shape=(self.data_window[self.lat].shape[0], self.data_window[self.lon].shape[0]),  
+                        all_touched=True)
+      return geo_mask
+    
+  
+  def get_coefs(self):
+    '''This function gives cell coefficients important for
+    consistent size measutres (see [wiki](https://github.com/Copani/RedList_Climate/wiki))
 
+    Returns
+    ---
+    cell_coefs: 2D np.array of shape burned into the grid, with coefficients for each cell
+    '''
+    # get radian grid resolution
+    latres = (self.dataarray[self.lat].values[1] - self.dataarray[self.lat].values[0]) / 360 * 2 * np.pi
+    lonres = (self.dataarray[self.lon].values[1] - self.dataarray[self.lon].values[0]) / 360 * 2 * np.pi
+    
     # weight data cells by grid cell size
-    try:
-      lats = np.expand_dims(data_window.lat,axis=1) / 360 * 2 * np.pi
-    except:
-      lats = np.expand_dims(data_window.latitude,axis=1) / 360 * 2 * np.pi
+    attribute_names = ['lat', 'latitude', 'y']
+
+    for attr in attribute_names:
+        try:
+            lats = np.expand_dims(getattr(self.data_window, attr), axis=1) / 360 * 2 * np.pi
+            break
+        except:
+            continue
       
     R = 6371 # Earth radius [km]  
     cell_coefs = R**2 * lonres * latres * np.cos(lats)
 
-    return data_window0, geo_mask, cell_coefs
+    return cell_coefs
+
+  def calc_average(self, dataarray):
+    return np.sum(self.mask * dataarray.values * self.cell_coefs) / np.sum(self.mask * self.cell_coefs)
+    
+
+  def calc_fraction_in_niche(self, min_hist, max_hist, data_window, nyears=5, nichemode="minmax"):
+    '''Calculate fraction of grid cells exceeding the niche.
+    
+    Parameters
+    ---
+    max_hist: float
+      maximum value of niche
+    min_hist: float
+      minimum value of niche
+    dataarray : xarray.core.dataarray.DataArray
+      With coordinates "lon", "lat" or "longitude", "latitude", with crs
+    nyears (opt): int
+      number of years niche must be exeeded within time slice to "count"
+    nichemode (opt): str
+      "minmax" (default), "min" or "max" for returning fraction of grid cells exceeding the niche, below the minimum or above the maximum
+    
+    Returns
+    ---
+    frac_in_niche: float
+      fraction of grid cells within the niche
+    frac_above_max: float
+      fraction of grid cells exceeding the niche
+    frac_below_min: float
+      fraction of grid cells below the minimum of the niche
+    '''
+
+    # calc which grid cells have exceeded threshold (at which times)
+    exceed_min_bool = (data_window < min_hist)
+    exceed_max_bool = (data_window > max_hist)
+    
+    # calc which grid cells have exceeded threshold for more then 5 years within 20y window
+    exceed_min_5y_bool = exceed_min_bool.sum('year') >= nyears
+    exceed_max_5y_bool = exceed_max_bool.sum('year') >= nyears
+    
+    # reformulate in temrs of values and coefficients (prop. to grid cell size of value)
+    exceed_min_5y_bool_range = exceed_min_5y_bool.values[self.mask.astype(bool)]
+    exceed_max_5y_bool_range = exceed_max_5y_bool.values[self.mask.astype(bool)]
+    coefficients = (self.cell_coefs * np.ones(data_window.shape[-1]))[self.mask.astype(bool)]
+
+    # calc area fractions, handel exceptions when there is no geometry
+    
+    frac_above_max = np.sum(coefficients * exceed_max_5y_bool_range) / np.sum(coefficients)
+    frac_below_min = np.sum(coefficients * exceed_min_5y_bool_range) / np.sum(coefficients)
+    
+    if nichemode == "minmax":
+      return 1 - frac_above_max - frac_below_min
+    elif nichemode == "min":
+      return  1 - frac_below_min
+    elif nichemode == "max":
+      return 1 - frac_above_max
+
+
+def calc_limits(data, nsig=3):
+  '''Calculate min and max excluding values above and below nsig standard deviations away from mean
+  
+  Input
+  ---
+  data: array like
+    should represent data window with time and space dim. otherwise there is danger of a too narrow niche
+  nsig (opt): float
+    values outside nsig standard deviations from the mean are excluded
+    
+  Output
+  ---
+  '''
+  # print warning if data array is not 2dimensional (later)
+
+  # apply outlier exclusion mask
+  mask_no_outliers = ((data.values < data.values.mean() + nsig * data.values.std()) & 
+          (data.values > data.values.mean() - nsig * data.values.std()) )
+  
+  data_without_outliers = data.values[mask_no_outliers]
+  
+  data_max = np.max(data_without_outliers)
+  data_min = np.min(data_without_outliers)
+  
+  return data_min, data_max
 
 def weighted_percentile(a, q, weights=None, interpolation='step'):
     """
@@ -243,92 +362,7 @@ def calc_percentiles(percents, dataarray, gdf_i, geo_mask=None, cell_coefs=None,
 
   return percentiles
 
-def calc_niche(data, nsig=3):
-  '''Calculate min and max excluding values above and below nsig standard seviations away from mean
-  
-  Input
-  ---
-  data: array like
-    should represent data window with time and space dim. otherwise there is danger of a too narrow niche
-  nsig (opt): float
-    values outside nsig standard deviations from the mean are excluded
+
     
-  Output
-  ---
-  '''
-  # print warning if data array is not 2dimensional (later)
-
-  # apply outlyer exclusion mask
-  mask = ((data.values < data.values.mean() + nsig * data.values.std()) & 
-          (data.values > data.values.mean() - nsig * data.values.std()) )
   
-  data_without_outlyers = data.values[mask]
-  
-  data_max = np.max(data_without_outlyers)
-  data_min = np.min(data_without_outlyers)
-  
-  return data_min, data_max
-  
-
-def calc_fraction_in_niche(min_hist, max_hist, dataarray, gdf_i, geo_mask=None, cell_coefs=None, nyears=5, margin=1):
-  '''Calculate fraction of grid cells exceeding the niche.
-  
-  Parameters
-  ---
-  max_hist: float
-    maximum value of niche
-  min_hist: float
-    minimum value of niche
-  dataarray : xarray.core.dataarray.DataArray
-    With coordinates "lon", "lat" or "longitude", "latitude", with crs
-  gdf_i: single lined GeoDataFrame
-    if you have multiple lines, use gdf.iloc[[i]]
-  geo_mask (opt) : 2D np.array
-    output of prec_for_gridcalc function
-  cell_coefs (opt): 2D np.array
-    output of prec_for_gridcalc function
-  nyears (opt): int
-    number of years niche must be exeeded within time slice to "count"
-  margin (opt): float
-    margin of window calculation (min. 2 * resolution recommended)
-  
-  Returns
-  ---
-  frac_in_niche: float
-    fraction of grid cells within the niche
-  frac_above_max: float
-    fraction of grid cells exceeding the niche
-  frac_below_min: float
-    fraction of grid cells below the minimum of the niche
-  '''
-
-  # Assert that geo_mask and cell_coefs are either both values or both none
-  assert ((geo_mask is None) and (cell_coefs is None)) or ((geo_mask is not None) and (cell_coefs is not None)), 'both geo_mask and cell_coefs needed as input'
-
-  # depending on input, calc data window and perhaps geo mask and cell coefficients
-  if geo_mask is None:
-    data_window, geo_mask, cell_coefs = prep_for_gridcalc(dataarray, gdf_i, margin=margin)
-  else:
-    data_window = prep_for_gridcalc(dataarray, gdf_i, window_only=True, margin=margin)
-
-  # calc which grid cells have exceeded threshold (at which times)
-  exceed_min_bool = (data_window < min_hist)
-  exceed_max_bool = (data_window > max_hist)
-  
-  # calc which grid cells have exceeded threshold for more then 5 years 
-  exceed_min_5y_bool = exceed_min_bool.sum('year') >= nyears
-  exceed_max_5y_bool = exceed_max_bool.sum('year') >= nyears
-  
-  # reformulate in temrs of values and coefficients (prop. to grid cell size of value)
-  exceed_min_5y_bool_range = exceed_min_5y_bool.values[geo_mask.astype(bool)]
-  exceed_max_5y_bool_range = exceed_max_5y_bool.values[geo_mask.astype(bool)]
-  coefficients = (cell_coefs * np.ones(data_window.shape[-1]))[geo_mask.astype(bool)]
-
-  # calc area fractions
-  frac_above_max = np.sum(coefficients * exceed_max_5y_bool_range) / np.sum(coefficients)
-  frac_below_min = np.sum(coefficients * exceed_min_5y_bool_range) / np.sum(coefficients)
-  
-  frac_in_niche = 1 - frac_above_max - frac_below_min
-  
-  return frac_in_niche, frac_above_max, frac_below_min
 

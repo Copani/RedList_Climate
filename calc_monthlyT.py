@@ -3,12 +3,14 @@ import xarray as xr
 import glob
 from datetime import date
 from time import time 
+import dask
+
 t1 = time()
 
 # get all temperature files 1940-2022
 varn='tas'
-folder='/p/projects/compacts/data/climate/ERA5/' + varn + '/'
-stem=varn + '_day_ECMWF-ERA5_observation_'
+folder='/p/projects/climate_data_central/reanalysis/ERA5/' + varn + '/'
+stem=varn + '_1hr_ECMWF-ERA5_observation_'
 files=np.sort(glob.glob(folder + stem + '*'))
 
 def bring(filename):
@@ -23,60 +25,45 @@ def bring(filename):
     T_year = T_year.sel(latitude=T_year['latitude'][::-1])
 
     # from K to °C
+    T_year = T_year.chunk({'time': 40})  
     T_year['tas'] = T_year['tas'] - 273.15
     return T_year
 
     # write crs
-
-def monthly_stat(T_year, year, stat):
-    '''Calculates monthly statistics'''
-    # Calc monthly stat
-    if stat == 'min':
-        Tstat = T_year.groupby('time.month').min('time') #(F) USGS2012 suggests mean of daily minima!
-    elif stat == 'avg':
-        Tstat = T_year.groupby('time.month').mean('time')
-    elif stat == 'max':
-        Tstat = T_year.groupby('time.month').max('time')
-        
-    # combine month and year to "time" dimension
-    Tstat['time'] = np.array([np.datetime64(date(year, m, 1)) for m in Tstat.month.values])
-    
-    # drop unnecessary month dimension
-    Tstat = Tstat.drop('month')
-    Tstat = Tstat.isel(month=0)
-    
-    return Tstat
-
     
 # loop through years and compile one dataset of all monthly statistics
+datasets = []
 for f, filename in enumerate(files):
     
     T_year = bring(filename)
-    year = int(filename.split('.')[0].split('_')[4])
-
-    Tmin = monthly_stat(T_year, year, 'min')
-    Tavg = monthly_stat(T_year, year, 'avg')
-    Tmax = monthly_stat(T_year, year, 'max')
     
-    # if f=0: merge into one dataset, if f>0: append to existing dataset
-    if f == 0:
-        Tmin_all = Tmin
-        Tavg_all = Tavg
-        Tmax_all = Tmax
-    else:
-        Tmin_all = xr.concat([Tmin_all, Tmin], dim='time')
-        Tavg_all = xr.concat([Tavg_all, Tavg], dim='time')
-        Tmax_all = xr.concat([Tmax_all, Tmax], dim='time')
-        
-        
-# rename dimensions from tas to min, avg, max
-Tmin_all = Tmin_all.rename({'tas':'Tmin'})
-Tavg_all = Tavg_all.rename({'tas':'Tavg'})
-Tmax_all = Tmax_all.rename({'tas':'Tmax'})
+    # calc monthly mean
+    Tavg = T_year.resample(time='M').mean().compute()
+    
+    # calc monthly mean of daily max
+    daily_max = T_year.resample(time='D').min().compute()
+    Tmax = daily_max.resample(time='M').mean().compute()
+    
+    # calc monthly mean of daily min
+    daily_min = T_year.resample(time='D').min().compute()
+    Tmin = daily_min.resample(time='M').mean().compute()
+    
+    # rename dimensions from tas to min, avg, max
+    Tmin = Tmin.rename({'tas':'Tmin'})
+    Tavg = Tavg.rename({'tas':'Tavg'})
+    Tmax = Tmax.rename({'tas':'Tmax'})
 
-# merge all T's into one dataset
-T_all = xr.merge([Tmin_all.Tmin, Tavg_all.Tavg, Tmax_all.Tmax])
-T_all.to_netcdf('/home/claussar/ERA5monthly/ERA5_2mtemp_1940-2022.nc')
+    # merge all T's into one dataset
+    T_all = xr.merge([Tmin.Tmin, Tavg.Tavg, Tmax.Tmax])
+    datasets.append(T_all)
+
+# concatenate all datasets along the time dimension
+final_dataset = xr.concat(datasets, dim='time')
+
+# save the final dataset to a netCDF file
+final_dataset.to_netcdf('/home/claussar/ERA5monthly/ERA5_2mtemp_1940-2022_test.nc')
 
 t2 = time()
 print('finished in', t2-t1)
+        
+  

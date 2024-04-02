@@ -8,8 +8,9 @@ from time import time
 from datetime import date, timedelta
 from utilities_spacial_vars import *
 
-rows = 0 # of rows = 0, all rows are loaded
+rows = 20 # of rows = 0, all rows are loaded
 year = 2004
+margin = 0.5 # grid resolution 0.25
 
 t1 = time()
 
@@ -22,133 +23,91 @@ if rows == 0:
   species_data = gpd.read_file('/p/projects/impactee/Data/biodiversity/GAA2/GAA2_allspecies.gdb')
   rows = len(species_data)
 else:
-  species_data = gpd.read_file('/p/projects/impactee/Data/biodiversity/GAA2/GAA2_allspecies.gdb', rows=rows)
+  # species_data = gpd.read_file('/p/projects/impactee/Data/biodiversity/GAA2/GAA2_allspecies.gdb', rows=rows)
+  species_data = gpd.read_file('Data/GAA2/GAA2_allspecies.gdb', rows=rows)
 
 t2 = time()
 print('{} rows of species data loaded in {} s'.format(rows, t2-t1))
 
-# Load monthly min, max and avg of daily mean temperatures from ERA5 [°C]
-# 0.25 x 0.25° res, 1940 - 2022
-T = xr.open_dataset('/home/claussar/ERA5monthly/ERA5_2mtemp_1940-2022.nc')
+# Load bioclimatic variavles
+# bioclim = xr.open_dataset('/home/claussar/climate variables/bioclimatic_variables.nc')
+bioclim = xr.open_dataset('Data/ClimateVariables/bioclimatic_variables.nc')
 
-## write crs to WG84 lon,lat
-T = T.rio.write_crs("EPSG:4326")
-
-# Load and preprocesss ERA5 precipitation data [m]
-# 0.25 x 0.25° res, 1980 - 2022
-P = xr.open_dataset('/home/claussar/ERA5monthly/ERA5_prec_1940_2023.nc').tp 
-
-## convert to -180, 180 longiude
-P['longitude'] = (P['longitude'] + 180) % 360 - 180
-P = P.sortby('longitude')
-
-## put latitude into correct order (-90 to 90) instead of other way around
-P = P.sel(latitude=P['latitude'][::-1])
-
-## write lon lat crs
-P = P.rio.write_crs("EPSG:4326")
-  
-t4 = time()
-print('ERA5 Temperature and Precipitation data loaded and preprocessed in {} s'.format(t4-t2))
-
-### CALCULATIONS ###
-
-def calc_bioclim(T, P, years):
-  """
-  Calculate bioclimatic variables for a given range of years.
-
-  Parameters:
-  T (xarray.Dataset): Dataset containing temperature data with variables 'Tavg', 'Tmax', 'Tmin'.
-  P (xarray.Dataset): Dataset containing precipitation data with variable 'tp'.
-  years (tuple): A tuple containing the start and end years for the calculation.
-
-  Returns:
-  dict: A dictionary containing the calculated bioclimatic variables:
-      'MAT' - Mean Annual Temperature
-      'MTWM' - Maximum Temperature of Warmest Month
-      'MTCM' - Minimum Temperature of Coldest Month
-      'AP' - Total Annual Precipitation
-      'PDQ' - Precipitation of Driest Quarter
-  """
-  start_year, end_year = years
-
-  # Calculate mean annual temperature (MAT) averages
-  MAT = T.Tavg.groupby('time.year').mean('time')
-  MAT_years = MAT.sel(year=slice(start_year, end_year))
-  
-  # # Calculate max temperature of warmest month (MTWM)
-  # MTWM = T.Tmax.groupby('time.year').max('time')
-  # MTWM_years = MTWM.sel(year=slice(start_year, end_year)).mean('year')
-
-  # # Calculate min temperature of coldest month (MTCM)
-  # MTCM = T.Tmin.groupby('time.year').min('time')
-  # MTCM_years = MTCM.sel(year=slice(start_year, end_year)).mean('year')
-
-  # # Calculate total annual precipitation (AP)
-  # AP = P.tp.groupby('time.year').sum('time')[:,0]
-  # AP_years = AP.sel(year=slice(start_year, end_year)).mean('year')
-
-  # # Calculate precipitation of driest quarter (PDQ)
-  # Prec_quaterly = P.tp.rolling(time=4).sum()
-  # PDQ = Prec_quaterly.groupby('time.year').min()[:,0]
-  # PDQ_years = PDQ.sel(year=slice(start_year, end_year)).mean('year')
-
-  return {
-    'MAT': MAT_years# ,
-    # 'MTWM': MTWM_years,
-    # 'MTCM': MTCM_years,
-    # 'AP': AP_years,
-    # 'PDQ': PDQ_years
-  }
-  
+### CALCULATIONS ###  
 
 
-# calc base period 1940 - 1970
-bioclim_1940_1970 = xr.Dataset(calc_bioclim(T, P, (1940, 1970)))
-bioclim_1980_2004 = xr.Dataset(calc_bioclim(T, P, (1980, 2004)))
-# bioclim_2004_2023 = xr.Dataset(calc_bioclim_vars_for_years(T, P, (2004, 2021)))
+# calc bioclimatic variables for base period 1940 - 1970
+bioclim_1940_1970 = bioclim.sel(year=slice(1940,1970))
 
-t5 = time()
-print('5 climate fields calculated in {} s'.format(t5-t4))
+# calc bioclimatic variables for 20 years before acessmensts 2004 and 2022
+bioclim20y = bioclim.sel(year=slice(year-20, year))
 
+# calc comparison period
+if year == 2022:
+  bioclim_comp = bioclim.sel(year=slice(2004-20, 2004))
+elif year == 2004:
+  bioclim_comp = bioclim.sel(year=slice(1980-20, 1980))
 
 # For each species in this dataset, get grid, calc quantities
-nichefrac_column = [None] * rows
+
+## summarize climate variables with dictionary of lists
+var_codes = ["MAT", "MTWM", "MTCM", "AP", "PDQ"]
+columns = {var_code: [np.nan] * rows for var_code in var_codes}
+change_columns = {var_code: [np.nan] * rows for var_code in var_codes}
+nichefrac_columns = {var_code: [np.nan] * rows for var_code in var_codes}
 
 for i in range(rows):
   species_i = species_data.iloc[[i]]
 
   ## check if geometry is valid
   rmap = species_i.iloc[0].explode()
-  if rmap.geometry.is_valid:
-       
-    ## apply grid preparations leaving time dimension intact
-    MAT_1940_1970_window, geo_mask, cell_coefs = prep_for_gridcalc(bioclim_1940_1970.MAT, species_i)
+  if rmap.geometry.is_valid:  
     
-    ## calculate fraction of 1980-2004 mean MAT outside climate niche.
-    min_hist, max_hist = calc_niche(MAT_1940_1970_window)
-    nichefrac_column[i], _, _ = calc_fraction_in_niche(min_hist, max_hist, bioclim_1980_2004.MAT, species_i, geo_mask=geo_mask, cell_coefs=cell_coefs)
+    # initialize grid with "MAT", because it has the same shape as the other variables
+    grid = GridCalc(bioclim_1940_1970['MAT'], species_i, margin=margin)
     
+    for var_code in var_codes:
+      ## average over 20 years prior to assessment
+      var_window = grid.get_window(bioclim20y[var_code])
+      columns[var_code][i] = grid.calc_average(var_window.mean('year'))
+
+      ## difference to mean of comparison period
+      var_comp = grid.get_window(bioclim_comp[var_code].mean('year'))
+      var_difference = var_window.mean('year') - var_comp
+      change_columns[var_code][i] = grid.calc_average(var_difference)
+      
+      ## calculate fraction of realm outside climate niche for each variable (note that there is a time dimension in bioclim20y)
+      ## get historical window for each variable (lon, lat, time)
+      hist_window = grid.get_window(bioclim_1940_1970[var_code])
+      min_hist, max_hist = calc_limits(hist_window)
+      
+      nichefrac_columns[var_code][i] = grid.calc_fraction_in_niche(min_hist, max_hist, var_window, nichemode='minmax')
+      # # calc niches
+      # if var_code == 'MAT':
+      #   nichefrac_columns[var_code][i] = grid.calc_fraction_in_niche(min_hist, max_hist, hist_window, nichemode='minmax')
+      # elif var_code == 'MTWM':
+      #   nichefrac_columns[var_code][i] = grid.calc_fraction_in_niche(min_hist, max_hist, hist_window, nichemode='max')
+      # elif var_code == 'MTCM':
+      #   nichefrac_columns[var_code][i] = grid.calc_fraction_in_niche(min_hist, max_hist, hist_window, nichemode='min')
+      # elif var_code == 'AP':
+      #   nichefrac_columns[var_code][i] = grid.calc_fraction_in_niche(min_hist, max_hist, hist_window, nichemode='minmax')
+      # elif var_code == 'PDQ':
+      #   nichefrac_columns[var_code][i] = grid.calc_fraction_in_niche(min_hist, max_hist, hist_window, nichemode='min')
+          
+
+  if i%1000 == 0:
+    print(i, 'species done')
     
+# replace the geometry column in the original dataframe 
+species_data = species_data.drop(['geometry'], axis=1)
 
+for var_code in var_codes:
+    species_data[f'{var_code}_nichefrac_{year}'] = nichefrac_columns[var_code]
+    species_data[f'{var_code}_{year}'] = columns[var_code]
+    species_data[f'{var_code}_change_{year}'] = change_columns[var_code]
 
-# # replace the geometry column in the original dataframe 
-# # species_data = species_data.drop(['geometry'], axis=1)
-# # or
-# # add data to additional columns in existing dataframe
-# del species_data
-# species_data = pd.read_csv('RedList_Climate\gaa2_landuse_2021_2004.csv')
-
-# species_data['urbanareas_{}'.format(year)] = urban_column
-# species_data['cropland_{}'.format(year)] = crop_column
-# species_data['rangeland_{}'.format(year)] = rangeland_column
-# species_data['managed_pasture_{}'.format(year)] = managed_pasture_column
-# print('qantities for {} species calculated in {} s'.format(rows, t4-t3))
-
-# # save new dataframe
-# # species_data.to_csv('/home/claussar/IUCN_range_coords/IUCN_AMPHIBIA_coords.csv')
-# species_data.to_csv('RedList_Climate\gaa2_landuse_2021_2004_1980.csv')
-
-np.save('/home/claussar/nichefrac_column.npy', np.array(nichefrac_column))
-t4 = time()
-print('finished in {} s'.format(t4-t1))
+# save new dataframe
+# species_data.to_csv('/home/claussar/gaa2_climate_{}.csv'.format(year))
+species_data.to_csv('RedList_Climate/validation/NEWgaa2_climate_{}.csv'.format(year))
+t5 = time()
+print('finished in {} s'.format(t5-t1))
