@@ -190,31 +190,34 @@ class GridCalc:
       return 1 - frac_above_max
 
 
-def calc_limits(data, nsig=3):
-  '''Calculate min and max excluding values above and below nsig standard deviations away from mean
-  
-  Input
-  ---
-  data: array like
-    should represent data window with time and space dim. otherwise there is danger of a too narrow niche
-  nsig (opt): float
-    values outside nsig standard deviations from the mean are excluded
+  def calc_hist_limits(self, hist_data, nsig=3):
+    '''Calculate min and max excluding values above and below nsig standard deviations away from mean
     
-  Output
-  ---
-  '''
-  # print warning if data array is not 2dimensional (later)
+    Input
+    ---
+    data: array like
+      should represent data window with time and space dim. otherwise there is danger of a too narrow niche
+    nsig (opt): float
+      values outside nsig standard deviations from the mean are excluded
+      
+    Output
+    ---
+    '''
+    # print warning if data array is not 2dimensional (later)
+    hist_window = self.get_window(hist_data)
+    mask_extruded = np.repeat(self.mask[np.newaxis, :, :], hist_window.values.shape[0], axis=0)
+    data = hist_window.values[mask_extruded.astype(bool)]
 
-  # apply outlier exclusion mask
-  mask_no_outliers = ((data.values < data.values.mean() + nsig * data.values.std()) & 
-          (data.values > data.values.mean() - nsig * data.values.std()) )
-  
-  data_without_outliers = data.values[mask_no_outliers]
-  
-  data_max = np.max(data_without_outliers)
-  data_min = np.min(data_without_outliers)
-  
-  return data_min, data_max
+    # apply outlier exclusion mask
+    mask_no_outliers = ((data < data.mean() + nsig * data.std()) & 
+            (data > data.mean() - nsig * data.std()) )
+    
+    data_without_outliers = data[mask_no_outliers]
+    
+    data_max = np.max(data_without_outliers)
+    data_min = np.min(data_without_outliers)
+    
+    return data_min, data_max
 
 def weighted_percentile(a, q, weights=None, interpolation='step'):
     """

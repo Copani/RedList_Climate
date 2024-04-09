@@ -7,8 +7,7 @@ from rasterio.features import rasterize
 from time import time
 from utilities_spacial_vars import prep_for_gridcalc
 
-# MISSING: Pop density + mean accessibility
-# estimate population density
+
 # pop = xr.open_dataset("Data\HYDE_landuse_pop_1901_2021\population_histsoc_30arcmin_annual_1901_2021.nc")
 # area=111*0.5*111*0.5*np.cos(lat*np.pi/180)
 # pop_dens=np.swapaxes(np.divide(np.swapaxes(pop,1,2),area),1,2)
